@@ -5,7 +5,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 use wgpu::{Buffer, Device, Queue, Texture, TextureView, util::DeviceExt};
 
-use crate::{AstrariaError, AstrariaResult, generated_shaders::common::VertexInput};
+use crate::{AstrariaError, AstrariaResult};
+
+#[cfg(feature = "native")]
+use crate::generated_shaders::common::VertexInput;
 
 pub struct AssetManager {
     textures: HashMap<String, Arc<TextureAsset>>,
@@ -125,7 +128,7 @@ impl AssetManager {
         }
 
         // Resolve Java-style paths to actual file paths
-        let resolved_path = Self::resolve_texture_path(path)?;
+        let resolved_path = Self::resolve_texture_path(path);
         log::info!(
             "AssetManager: Resolved path '{}' -> '{}'",
             path,
@@ -139,9 +142,9 @@ impl AssetManager {
             return Ok(texture);
         }
 
-        // Load image from resolved file path
+        // Load image data
         log::info!("AssetManager: Loading image file: {}", resolved_path);
-        let img = image::open(&resolved_path).map_err(|e| {
+        let img = Self::load_image_data(&resolved_path).await.map_err(|e| {
             log::error!(
                 "AssetManager: Failed to load image {} (resolved from {}): {}",
                 resolved_path,
@@ -171,12 +174,74 @@ impl AssetManager {
         Ok(texture_arc)
     }
 
+    #[cfg(feature = "native")]
+    async fn load_image_data(path: &str) -> AstrariaResult<DynamicImage> {
+        image::open(path).map_err(|e| {
+            AstrariaError::AssetLoading(format!("Failed to load image {}: {}", path, e))
+        })
+    }
+
+    #[cfg(feature = "web")]
+    async fn load_image_data(path: &str) -> AstrariaResult<DynamicImage> {
+        let bytes = Self::fetch_bytes(path).await?;
+
+        // Determine format from file extension
+        let format = Self::guess_image_format(path);
+
+        match format {
+            Some(fmt) => image::load_from_memory_with_format(&bytes, fmt).map_err(|e| {
+                AstrariaError::AssetLoading(format!("Failed to decode image {}: {}", path, e))
+            }),
+            None => image::load_from_memory(&bytes).map_err(|e| {
+                AstrariaError::AssetLoading(format!("Failed to decode image {}: {}", path, e))
+            }),
+        }
+    }
+
+    #[cfg(feature = "web")]
+    fn guess_image_format(path: &str) -> Option<image::ImageFormat> {
+        let path_lower = path.to_lowercase();
+        if path_lower.ends_with(".png") {
+            Some(image::ImageFormat::Png)
+        } else if path_lower.ends_with(".jpg") || path_lower.ends_with(".jpeg") {
+            Some(image::ImageFormat::Jpeg)
+        } else if path_lower.ends_with(".gif") {
+            Some(image::ImageFormat::Gif)
+        } else if path_lower.ends_with(".bmp") {
+            Some(image::ImageFormat::Bmp)
+        } else if path_lower.ends_with(".webp") {
+            Some(image::ImageFormat::WebP)
+        } else {
+            None
+        }
+    }
+
     fn create_texture_from_image(
         device: &Device,
         queue: &Queue,
         img: &DynamicImage,
         label: Option<&str>,
     ) -> AstrariaResult<TextureAsset> {
+        // WebGL2 has a max texture dimension of 2048
+        #[cfg(target_arch = "wasm32")]
+        const MAX_TEXTURE_DIM: u32 = 2048;
+        #[cfg(not(target_arch = "wasm32"))]
+        const MAX_TEXTURE_DIM: u32 = 16384;
+
+        let dimensions = img.dimensions();
+        let img = if dimensions.0 > MAX_TEXTURE_DIM || dimensions.1 > MAX_TEXTURE_DIM {
+            let scale = (MAX_TEXTURE_DIM as f32 / dimensions.0.max(dimensions.1) as f32).min(1.0);
+            let new_width = (dimensions.0 as f32 * scale) as u32;
+            let new_height = (dimensions.1 as f32 * scale) as u32;
+            log::info!(
+                "Resizing texture from {}x{} to {}x{} (max dimension: {})",
+                dimensions.0, dimensions.1, new_width, new_height, MAX_TEXTURE_DIM
+            );
+            std::borrow::Cow::Owned(img.resize(new_width, new_height, image::imageops::FilterType::Triangle))
+        } else {
+            std::borrow::Cow::Borrowed(img)
+        };
+
         let rgba = img.to_rgba8();
         let dimensions = img.dimensions();
 
@@ -223,6 +288,7 @@ impl AssetManager {
         })
     }
 
+    #[cfg(feature = "native")]
     pub async fn load_scenario(&self, path: &str) -> AstrariaResult<String> {
         use std::fs;
 
@@ -253,6 +319,82 @@ impl AssetManager {
         }
     }
 
+    #[cfg(feature = "web")]
+    pub async fn load_scenario(&self, path: &str) -> AstrariaResult<String> {
+        // On web, fetch from HTTP
+        let full_path = format!("assets/examples/{}", path);
+        Self::fetch_text(&full_path).await
+    }
+
+    #[cfg(feature = "web")]
+    async fn fetch_text(url: &str) -> AstrariaResult<String> {
+        use wasm_bindgen::JsCast;
+        use wasm_bindgen_futures::JsFuture;
+        use web_sys::{Request, RequestInit, RequestMode, Response};
+
+        let window = web_sys::window().ok_or_else(|| {
+            AstrariaError::AssetLoading("No window object available".to_string())
+        })?;
+
+        let mut opts = RequestInit::new();
+        opts.method("GET");
+        opts.mode(RequestMode::Cors);
+
+        let request = Request::new_with_str_and_init(url, &opts)
+            .map_err(|e| AstrariaError::AssetLoading(format!("Failed to create request: {:?}", e)))?;
+
+        let resp_value = JsFuture::from(window.fetch_with_request(&request))
+            .await
+            .map_err(|e| AstrariaError::AssetLoading(format!("Fetch failed: {:?}", e)))?;
+
+        let resp: Response = resp_value.dyn_into()
+            .map_err(|_| AstrariaError::AssetLoading("Response cast failed".to_string()))?;
+
+        let text = JsFuture::from(resp.text().map_err(|e| {
+            AstrariaError::AssetLoading(format!("Failed to get response text: {:?}", e))
+        })?)
+        .await
+        .map_err(|e| AstrariaError::AssetLoading(format!("Failed to read text: {:?}", e)))?;
+
+        text.as_string()
+            .ok_or_else(|| AstrariaError::AssetLoading("Response was not a string".to_string()))
+    }
+
+    #[cfg(feature = "web")]
+    async fn fetch_bytes(url: &str) -> AstrariaResult<Vec<u8>> {
+        use wasm_bindgen::JsCast;
+        use wasm_bindgen_futures::JsFuture;
+        use web_sys::{Request, RequestInit, RequestMode, Response};
+
+        let window = web_sys::window().ok_or_else(|| {
+            AstrariaError::AssetLoading("No window object available".to_string())
+        })?;
+
+        let mut opts = RequestInit::new();
+        opts.method("GET");
+        opts.mode(RequestMode::Cors);
+
+        let request = Request::new_with_str_and_init(url, &opts)
+            .map_err(|e| AstrariaError::AssetLoading(format!("Failed to create request: {:?}", e)))?;
+
+        let resp_value = JsFuture::from(window.fetch_with_request(&request))
+            .await
+            .map_err(|e| AstrariaError::AssetLoading(format!("Fetch failed: {:?}", e)))?;
+
+        let resp: Response = resp_value.dyn_into()
+            .map_err(|_| AstrariaError::AssetLoading("Response cast failed".to_string()))?;
+
+        let array_buffer = JsFuture::from(resp.array_buffer().map_err(|e| {
+            AstrariaError::AssetLoading(format!("Failed to get array buffer: {:?}", e))
+        })?)
+        .await
+        .map_err(|e| AstrariaError::AssetLoading(format!("Failed to read array buffer: {:?}", e)))?;
+
+        let uint8_array = js_sys::Uint8Array::new(&array_buffer);
+        Ok(uint8_array.to_vec())
+    }
+
+    #[cfg(feature = "native")]
     pub async fn load_model(
         &mut self,
         device: &Device,
@@ -283,7 +425,7 @@ impl AssetManager {
             )));
         }
 
-        // Use the first model for now (TODO: support multiple meshes)
+        // Use the first model for now
         let model = &models[0];
         let mesh = &model.mesh;
 
@@ -358,6 +500,115 @@ impl AssetManager {
         Ok(model_arc)
     }
 
+    #[cfg(feature = "web")]
+    pub async fn load_model(
+        &mut self,
+        device: &Device,
+        path: &str,
+    ) -> AstrariaResult<Arc<ModelAsset>> {
+        if let Some(model) = self.models.get(path) {
+            return Ok(Arc::clone(model));
+        }
+
+        log::info!("Loading OBJ model from web: {}", path);
+
+        // On web, we use a simple built-in sphere for now
+        // A full OBJ parser could be added later
+        let model_asset = Self::create_procedural_sphere(device, 32, 16)?;
+
+        log::info!(
+            "Created procedural sphere: {} vertices, {} indices",
+            model_asset.num_vertices,
+            model_asset.num_indices
+        );
+
+        let model_arc = Arc::new(model_asset);
+        self.models.insert(path.to_string(), Arc::clone(&model_arc));
+        Ok(model_arc)
+    }
+
+    #[cfg(feature = "web")]
+    fn create_procedural_sphere(
+        device: &Device,
+        segments: u32,
+        rings: u32,
+    ) -> AstrariaResult<ModelAsset> {
+        use std::f32::consts::PI;
+
+        let mut positions = Vec::new();
+        let mut normals = Vec::new();
+        let mut tex_coords = Vec::new();
+        let mut indices = Vec::new();
+
+        for ring in 0..=rings {
+            let phi = PI * ring as f32 / rings as f32;
+            let sin_phi = phi.sin();
+            let cos_phi = phi.cos();
+
+            for segment in 0..=segments {
+                let theta = 2.0 * PI * segment as f32 / segments as f32;
+                let sin_theta = theta.sin();
+                let cos_theta = theta.cos();
+
+                let x = cos_theta * sin_phi;
+                let y = cos_phi;
+                let z = sin_theta * sin_phi;
+
+                positions.push(glam::Vec3::new(x, y, z));
+                normals.push(glam::Vec3::new(x, y, z));
+                tex_coords.push(glam::Vec2::new(
+                    segment as f32 / segments as f32,
+                    ring as f32 / rings as f32,
+                ));
+            }
+        }
+
+        for ring in 0..rings {
+            for segment in 0..segments {
+                let current = ring * (segments + 1) + segment;
+                let next = current + segments + 1;
+
+                indices.push(current);
+                indices.push(next);
+                indices.push(current + 1);
+
+                indices.push(current + 1);
+                indices.push(next);
+                indices.push(next + 1);
+            }
+        }
+
+        // Create vertices by combining position, normal, tex_coord
+        let vertices: Vec<[f32; 8]> = positions
+            .iter()
+            .zip(normals.iter())
+            .zip(tex_coords.iter())
+            .map(|((pos, norm), tex)| {
+                [pos.x, pos.y, pos.z, tex.x, tex.y, norm.x, norm.y, norm.z]
+            })
+            .collect();
+
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Procedural Sphere Vertex Buffer"),
+            contents: bytemuck::cast_slice(&vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Procedural Sphere Index Buffer"),
+            contents: bytemuck::cast_slice(&indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+
+        Ok(ModelAsset {
+            vertex_buffer,
+            index_buffer,
+            num_indices: indices.len() as u32,
+            num_vertices: vertices.len() as u32,
+            material_name: None,
+        })
+    }
+
     /// Get a loaded model by path
     pub fn get_model(&self, path: &str) -> Option<&ModelAsset> {
         self.models.get(path).map(|arc| arc.as_ref())
@@ -427,25 +678,45 @@ impl AssetManager {
             return Ok(Arc::clone(cubemap));
         }
 
+        // WebGL2 has a max texture dimension of 2048
+        #[cfg(target_arch = "wasm32")]
+        const MAX_CUBEMAP_DIM: u32 = 2048;
+        #[cfg(not(target_arch = "wasm32"))]
+        const MAX_CUBEMAP_DIM: u32 = 16384;
+
         // Load all 6 face images
         let mut face_images = Vec::with_capacity(6);
         let mut cubemap_size = 0u32;
 
         for (i, path) in face_paths.iter().enumerate() {
-            let img = image::open(path).map_err(|e| {
+            let img = Self::load_image_data(path).await.map_err(|e| {
                 AstrariaError::AssetLoading(format!("Failed to load cubemap face {}: {}", path, e))
             })?;
 
-            let rgba = img.to_rgba8();
             let (width, height) = img.dimensions();
 
-            // Ensure all faces are square and same size
+            // Ensure all faces are square
             if width != height {
                 return Err(AstrariaError::AssetLoading(format!(
                     "Cubemap face {} is not square: {}x{}",
                     path, width, height
                 )));
             }
+
+            // Resize if too large for WebGL2
+            let img = if width > MAX_CUBEMAP_DIM {
+                let new_size = MAX_CUBEMAP_DIM;
+                log::info!(
+                    "Resizing cubemap face from {}x{} to {}x{} (max dimension: {})",
+                    width, height, new_size, new_size, MAX_CUBEMAP_DIM
+                );
+                img.resize_exact(new_size, new_size, image::imageops::FilterType::Triangle)
+            } else {
+                img
+            };
+
+            let rgba = img.to_rgba8();
+            let (width, _height) = img.dimensions();
 
             if i == 0 {
                 cubemap_size = width;
@@ -543,14 +814,15 @@ impl AssetManager {
 
     /// Resolve Java-style texture paths to actual file system paths
     /// Converts "./Planet Textures/filename.jpg" -> "assets/Planet Textures/filename.jpg"
-    fn resolve_texture_path(path: &str) -> AstrariaResult<String> {
+    #[cfg(feature = "native")]
+    fn resolve_texture_path(path: &str) -> String {
         if path.starts_with("./") {
             // Java-style relative path, convert to assets directory
             let resolved = format!("assets/{}", &path[2..]);
 
             // Verify the file exists
             if std::path::Path::new(&resolved).exists() {
-                Ok(resolved)
+                resolved
             } else {
                 // Try alternative asset directories
                 let alternatives = [
@@ -564,30 +836,37 @@ impl AssetManager {
 
                 for alt_path in &alternatives {
                     if std::path::Path::new(alt_path).exists() {
-                        return Ok(alt_path.clone());
+                        return alt_path.clone();
                     }
                 }
 
-                Err(AstrariaError::AssetLoading(format!(
-                    "Texture file not found: {} (tried: {})",
-                    path,
-                    alternatives.join(", ")
-                )))
+                // Return the best guess if nothing exists
+                resolved
             }
         } else if std::path::Path::new(path).exists() {
             // Already a valid path
-            Ok(path.to_string())
+            path.to_string()
         } else {
             // Try prepending assets directory
             let with_assets = format!("assets/{}", path);
             if std::path::Path::new(&with_assets).exists() {
-                Ok(with_assets)
+                with_assets
             } else {
-                Err(AstrariaError::AssetLoading(format!(
-                    "Texture file not found: {} (tried: assets/{})",
-                    path, path
-                )))
+                // Return best guess
+                with_assets
             }
+        }
+    }
+
+    /// Resolve texture paths for web - just normalizes the path
+    #[cfg(feature = "web")]
+    fn resolve_texture_path(path: &str) -> String {
+        if path.starts_with("./") {
+            format!("assets/{}", &path[2..])
+        } else if path.starts_with("assets/") {
+            path.to_string()
+        } else {
+            format!("assets/{}", path)
         }
     }
 

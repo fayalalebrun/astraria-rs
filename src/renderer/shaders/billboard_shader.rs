@@ -9,7 +9,7 @@ pub struct BillboardShader {
 }
 
 impl BillboardShader {
-    pub fn new(device: &Device, _queue: &Queue) -> AstrariaResult<Self> {
+    pub fn new(device: &Device, _queue: &Queue, surface_format: wgpu::TextureFormat) -> AstrariaResult<Self> {
         // Use the generated shader module and bind groups from wgsl_bindgen
         let shader = billboard::create_shader_module(device);
 
@@ -22,16 +22,14 @@ impl BillboardShader {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[billboard::VertexInput::vertex_buffer_layout(
-                    wgpu::VertexStepMode::Vertex,
-                )],
+                buffers: &[billboard::VertexInput::vertex_buffer_layout(wgpu::VertexStepMode::Vertex)],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Bgra8UnormSrgb,
+                    format: surface_format,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],

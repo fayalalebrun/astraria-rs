@@ -53,10 +53,13 @@ impl UserInterface {
 
         let egui_renderer = egui_wgpu::Renderer::new(
             renderer.device(),
-            wgpu::TextureFormat::Bgra8UnormSrgb, // Adjust format as needed
-            None,
-            1,
-            false,
+            renderer.surface_format(),
+            egui_wgpu::RendererOptions {
+                msaa_samples: 1,
+                depth_stencil_format: None,
+                dithering: false,
+                predictable_texture_filtering: false,
+            },
         );
 
         Ok(Self {
@@ -133,8 +136,42 @@ impl UserInterface {
         window: &winit::window::Window,
         physics: Option<&PhysicsSimulation>,
     ) -> AstrariaResult<(egui_wgpu::ScreenDescriptor, Vec<egui::ClippedPrimitive>)> {
+        // Get actual surface size (scaled for WebGL2)
+        let (surface_width, surface_height) = renderer.surface_size();
+        let window_size = window.inner_size();
+        let pixels_per_point = window.scale_factor() as f32;
+
+        // Calculate scale factor between window and surface
+        let scale_x = surface_width as f32 / window_size.width.max(1) as f32;
+        let scale_y = surface_height as f32 / window_size.height.max(1) as f32;
+
         // Begin egui frame
-        let raw_input = self.egui_winit.take_egui_input(window);
+        let mut raw_input = self.egui_winit.take_egui_input(window);
+
+        // Override screen_rect to match surface size
+        raw_input.screen_rect = Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::Vec2::new(
+                surface_width as f32 / pixels_per_point,
+                surface_height as f32 / pixels_per_point,
+            ),
+        ));
+
+        // Scale all pointer events from window space to surface space
+        for event in &mut raw_input.events {
+            match event {
+                egui::Event::PointerMoved(pos) => {
+                    pos.x *= scale_x;
+                    pos.y *= scale_y;
+                }
+                egui::Event::PointerButton { pos, .. } => {
+                    pos.x *= scale_x;
+                    pos.y *= scale_y;
+                }
+                _ => {}
+            }
+        }
+
         let mut show_controls = self.show_controls;
         let mut show_info = self.show_info;
         let mut show_stats = self.show_stats;
@@ -191,10 +228,10 @@ impl UserInterface {
         self.egui_winit
             .handle_platform_output(window, full_output.platform_output);
 
-        // Prepare egui rendering
+        // Prepare egui rendering - use surface size computed at start of function
         let screen_descriptor = egui_wgpu::ScreenDescriptor {
-            size_in_pixels: [window.inner_size().width, window.inner_size().height],
-            pixels_per_point: window.scale_factor() as f32,
+            size_in_pixels: [surface_width, surface_height],
+            pixels_per_point,
         };
 
         let clipped_primitives = self
@@ -247,6 +284,7 @@ impl UserInterface {
                     load: wgpu::LoadOp::Load, // Load existing scene
                     store: wgpu::StoreOp::Store,
                 },
+                depth_slice: None,
             })],
             depth_stencil_attachment: None,
             occlusion_query_set: None,

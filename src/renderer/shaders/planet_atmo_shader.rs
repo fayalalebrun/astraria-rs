@@ -12,7 +12,7 @@ pub struct PlanetAtmoShader {
 }
 
 impl PlanetAtmoShader {
-    pub fn new(device: &Device, _queue: &Queue) -> AstrariaResult<Self> {
+    pub fn new(device: &Device, _queue: &Queue, surface_format: wgpu::TextureFormat) -> AstrariaResult<Self> {
         // Use generated shader module
         let shader = generated_shaders::planet_atmo::create_shader_module(device);
 
@@ -24,7 +24,7 @@ impl PlanetAtmoShader {
             generated_shaders::planet_atmo::vs_main_entry(wgpu::VertexStepMode::Vertex);
         let fragment_entry =
             generated_shaders::planet_atmo::fs_main_entry([Some(wgpu::ColorTargetState {
-                format: wgpu::TextureFormat::Bgra8UnormSrgb,
+                format: surface_format,
                 blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                 write_mask: wgpu::ColorWrites::ALL,
             })]);
@@ -40,7 +40,8 @@ impl PlanetAtmoShader {
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
+                // Use Cw for WebGL compatibility (Y-axis is flipped in clip space)
+                front_face: wgpu::FrontFace::Cw,
                 cull_mode: Some(wgpu::Face::Back),
                 polygon_mode: wgpu::PolygonMode::Fill,
                 unclipped_depth: false,

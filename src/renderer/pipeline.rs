@@ -155,9 +155,7 @@ impl PipelineManager {
             vertex: wgpu::VertexState {
                 module: shader,
                 entry_point: Some("vs_main"),
-                buffers: &[VertexInput::vertex_buffer_layout(
-                    wgpu::VertexStepMode::Vertex,
-                )],
+                buffers: &[VertexInput::vertex_buffer_layout(wgpu::VertexStepMode::Vertex)],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -258,9 +256,7 @@ impl PipelineManager {
             vertex: wgpu::VertexState {
                 module: shader,
                 entry_point: Some("vs_main"),
-                buffers: &[SkyboxVertexInput::vertex_buffer_layout(
-                    wgpu::VertexStepMode::Vertex,
-                )],
+                buffers: &[SkyboxVertexInput::vertex_buffer_layout(wgpu::VertexStepMode::Vertex)],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -426,9 +422,7 @@ impl PipelineManager {
             vertex: wgpu::VertexState {
                 module: shader,
                 entry_point: Some("vs_main"),
-                buffers: &[VertexInput::vertex_buffer_layout(
-                    wgpu::VertexStepMode::Vertex,
-                )],
+                buffers: &[VertexInput::vertex_buffer_layout(wgpu::VertexStepMode::Vertex)],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -572,9 +566,7 @@ impl PipelineManager {
             vertex: wgpu::VertexState {
                 module: shader,
                 entry_point: Some("vs_main"),
-                buffers: &[VertexInput::vertex_buffer_layout(
-                    wgpu::VertexStepMode::Vertex,
-                )],
+                buffers: &[VertexInput::vertex_buffer_layout(wgpu::VertexStepMode::Vertex)],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -710,9 +702,7 @@ impl PipelineManager {
             vertex: wgpu::VertexState {
                 module: shader,
                 entry_point: Some("vs_main"),
-                buffers: &[BillboardVertexInput::vertex_buffer_layout(
-                    wgpu::VertexStepMode::Vertex,
-                )],
+                buffers: &[BillboardVertexInput::vertex_buffer_layout(wgpu::VertexStepMode::Vertex)],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {

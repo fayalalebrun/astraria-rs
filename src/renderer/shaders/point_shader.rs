@@ -9,7 +9,7 @@ pub struct PointShader {
 }
 
 impl PointShader {
-    pub fn new(device: &Device, _queue: &Queue) -> AstrariaResult<Self> {
+    pub fn new(device: &Device, _queue: &Queue, surface_format: wgpu::TextureFormat) -> AstrariaResult<Self> {
         // Use generated shader module
         let shader = generated_shaders::point::create_shader_module(device);
 
@@ -26,7 +26,7 @@ impl PointShader {
         let vertex_entry = generated_shaders::point::vs_main_entry(wgpu::VertexStepMode::Vertex);
         let fragment_entry =
             generated_shaders::point::fs_main_entry([Some(wgpu::ColorTargetState {
-                format: wgpu::TextureFormat::Bgra8UnormSrgb,
+                format: surface_format,
                 blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                 write_mask: wgpu::ColorWrites::ALL,
             })]);

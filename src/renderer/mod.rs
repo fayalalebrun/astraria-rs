@@ -71,13 +71,35 @@ pub fn get_distance_modifier(distance_m: f64) -> f32 {
     factor as f32
 }
 
+/// Scale dimensions to fit within WebGL2 max texture size (2048) while maintaining aspect ratio
+#[cfg(target_arch = "wasm32")]
+fn scale_to_webgl2_limits(width: u32, height: u32) -> (u32, u32) {
+    const MAX_DIM: u32 = 2048;
+    if width <= MAX_DIM && height <= MAX_DIM {
+        (width, height)
+    } else {
+        let scale = (MAX_DIM as f32 / width as f32).min(MAX_DIM as f32 / height as f32);
+        ((width as f32 * scale) as u32, (height as f32 * scale) as u32)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn scale_to_webgl2_limits(width: u32, height: u32) -> (u32, u32) {
+    (width, height)
+}
+
 impl Renderer {
     pub async fn new(window: &Window, asset_manager: &mut AssetManager) -> AstrariaResult<Self> {
         log::info!("Initializing wgpu renderer...");
 
-        // Create wgpu instance with all available backends for better compatibility
+        // Create wgpu instance - use WebGL on web for broader compatibility
+        #[cfg(feature = "web")]
+        let backends = wgpu::Backends::GL;
+        #[cfg(not(feature = "web"))]
+        let backends = wgpu::Backends::all();
+
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
+            backends,
             ..Default::default()
         });
 
@@ -121,18 +143,29 @@ impl Renderer {
 
         // Configure surface first
         let surface_caps = surface.get_capabilities(&adapter);
-        // Use Bgra8UnormSrgb which is supported on this system
-        let surface_format = wgpu::TextureFormat::Bgra8UnormSrgb;
-
-        log::info!("Surface format chosen: {:?}", surface_format);
         log::info!("Available surface formats: {:?}", surface_caps.formats);
 
+        // Pick a supported format - prefer sRGB formats for correct color
+        let surface_format = surface_caps
+            .formats
+            .iter()
+            .find(|f| f.is_srgb())
+            .copied()
+            .unwrap_or(surface_caps.formats[0]);
+
+        log::info!("Surface format chosen: {:?}", surface_format);
+
         let size = window.inner_size();
+        // Ensure we have valid dimensions (on web, initial size may be 0)
+        let raw_width = if size.width > 0 { size.width } else { 800 };
+        let raw_height = if size.height > 0 { size.height } else { 600 };
+        // Scale proportionally to fit within WebGL2 limits while maintaining aspect ratio
+        let (width, height) = scale_to_webgl2_limits(raw_width, raw_height);
         let surface_config = SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
-            width: size.width,
-            height: size.height,
+            width,
+            height,
             present_mode: surface_caps.present_modes[0],
             alpha_mode: surface_caps.alpha_modes[0],
             view_formats: vec![],
@@ -140,11 +173,16 @@ impl Renderer {
         };
 
         // Create MainRenderer with the surface and adapter to ensure device compatibility
-        let (main_renderer, surface) = MainRenderer::with_surface(&instance, surface).await?;
+        let (main_renderer, surface) = MainRenderer::with_surface(&instance, surface, surface_format).await?;
 
         // Get device and queue from MainRenderer
         let device = main_renderer.device();
         let queue = main_renderer.queue();
+
+        // Configure the surface for presentation
+        log::info!("Configuring surface with device...");
+        surface.configure(device, &surface_config);
+        log::info!("Surface configured successfully: {}x{}", surface_config.width, surface_config.height);
 
         // Create depth texture
         let (depth_texture, depth_view) = Self::create_depth_texture(device, &surface_config);
@@ -193,8 +231,10 @@ impl Renderer {
 
     pub fn resize(&mut self, new_size: PhysicalSize<u32>) -> AstrariaResult<()> {
         if new_size.width > 0 && new_size.height > 0 {
-            self.surface_config.width = new_size.width;
-            self.surface_config.height = new_size.height;
+            // Scale proportionally to fit within WebGL2 limits while maintaining aspect ratio
+            let (width, height) = scale_to_webgl2_limits(new_size.width, new_size.height);
+            self.surface_config.width = width;
+            self.surface_config.height = height;
             self.surface
                 .configure(self.main_renderer.device(), &self.surface_config);
 
@@ -204,12 +244,13 @@ impl Renderer {
             self.depth_texture = depth_texture;
             self.depth_view = depth_view;
 
-            // Update camera aspect ratio
+            // Update camera aspect ratio (use original aspect ratio, not scaled)
             self.main_renderer
                 .camera
                 .set_aspect_ratio(new_size.width as f32 / new_size.height as f32);
 
-            log::debug!("Renderer resized to {}x{}", new_size.width, new_size.height);
+            log::debug!("Renderer resized to {}x{} (scaled from {}x{})",
+                width, height, new_size.width, new_size.height);
         }
         Ok(())
     }
@@ -333,6 +374,7 @@ impl Renderer {
                         }),
                         store: wgpu::StoreOp::Store,
                     },
+                    depth_slice: None,
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.depth_view,
@@ -586,6 +628,14 @@ impl Renderer {
 
     pub fn queue(&self) -> &Queue {
         self.main_renderer.queue()
+    }
+
+    pub fn surface_format(&self) -> wgpu::TextureFormat {
+        self.surface_config.format
+    }
+
+    pub fn surface_size(&self) -> (u32, u32) {
+        (self.surface_config.width, self.surface_config.height)
     }
 
     pub fn lights_mut(&mut self) -> &mut LightManager {

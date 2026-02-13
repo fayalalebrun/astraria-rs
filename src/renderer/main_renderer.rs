@@ -204,6 +204,7 @@ impl MainRenderer {
             glow_size: occluded_glow_size,
             screen_width: 800.0,  // TODO: Get from actual surface config
             screen_height: 800.0, // TODO: Get from actual surface config
+            _padding: 0.0,        // Padding for 16-byte alignment (WebGL2 requirement)
         };
 
         // Create uniform buffer
@@ -531,23 +532,32 @@ impl MainRenderer {
                 AstrariaError::Graphics(format!("Failed to find a suitable graphics adapter: {e}"))
             })?;
 
+        let required_limits = if cfg!(target_arch = "wasm32") {
+            wgpu::Limits::downlevel_webgl2_defaults()
+        } else {
+            wgpu::Limits::default()
+        };
+
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
                 required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
+                required_limits: required_limits.clone(),
                 memory_hints: wgpu::MemoryHints::default(),
                 trace: wgpu::Trace::default(),
+                experimental_features: wgpu::ExperimentalFeatures::default(),
             })
             .await
             .map_err(|e| AstrariaError::Graphics(format!("Failed to create device: {e}")))?;
 
-        Self::with_device(device, queue).await
+        // Default to Bgra8UnormSrgb for headless/testing - common desktop format
+        Self::with_device(device, queue, wgpu::TextureFormat::Bgra8UnormSrgb).await
     }
 
     pub async fn with_surface<'a>(
         instance: &'a wgpu::Instance,
         surface: wgpu::Surface<'a>,
+        surface_format: wgpu::TextureFormat,
     ) -> AstrariaResult<(Self, wgpu::Surface<'static>)> {
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -560,23 +570,30 @@ impl MainRenderer {
                 AstrariaError::Graphics(format!("Failed to find a suitable graphics adapter: {e}"))
             })?;
 
+        let required_limits = if cfg!(target_arch = "wasm32") {
+            wgpu::Limits::downlevel_webgl2_defaults()
+        } else {
+            wgpu::Limits::default()
+        };
+
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
                 required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
+                required_limits,
                 memory_hints: wgpu::MemoryHints::default(),
                 trace: wgpu::Trace::default(),
+                experimental_features: wgpu::ExperimentalFeatures::default(),
             })
             .await
             .map_err(|e| AstrariaError::Graphics(format!("Failed to create device: {e}")))?;
 
-        let main_renderer = Self::with_device(device, queue).await?;
+        let main_renderer = Self::with_device(device, queue, surface_format).await?;
         let surface: wgpu::Surface<'static> = unsafe { std::mem::transmute(surface) };
         Ok((main_renderer, surface))
     }
 
-    pub async fn with_device(device: wgpu::Device, queue: wgpu::Queue) -> AstrariaResult<Self> {
+    pub async fn with_device(device: wgpu::Device, queue: wgpu::Queue, surface_format: wgpu::TextureFormat) -> AstrariaResult<Self> {
         // Create depth texture
         let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Depth Texture"),
@@ -598,23 +615,24 @@ impl MainRenderer {
         // Create asset manager and load textures
         let mut asset_manager = AssetManager::new().await?;
 
-        // Load all required textures (using actual asset paths)
+        // Load all required textures (using 2K textures for web compatibility)
         let earth_day_texture = asset_manager
             .load_texture(
                 &device,
                 &queue,
-                "assets/Planet Textures/8k_earth_with_clouds.jpg",
+                "assets/Planet Textures/earth.jpg",
             )
             .await?;
+        // Earth night texture - use earth.jpg as fallback (no 2K night texture available)
         let earth_night_texture = asset_manager
             .load_texture(
                 &device,
                 &queue,
-                "assets/Planet Textures/8k_earth_nightmap.jpg",
+                "assets/Planet Textures/earth.jpg",
             )
             .await?;
         let sun_texture = asset_manager
-            .load_texture(&device, &queue, "assets/Planet Textures/8k_sun.jpg")
+            .load_texture(&device, &queue, "assets/Planet Textures/2k_sun.jpg")
             .await?;
         let skybox_cubemap = asset_manager
             .load_cubemap(
@@ -622,12 +640,12 @@ impl MainRenderer {
                 &queue,
                 "milkyway",
                 &[
-                    "assets/skybox/MilkyWayXP.png", // +X (right)
-                    "assets/skybox/MilkyWayXN.png", // -X (left)
-                    "assets/skybox/MilkyWayYP.png", // +Y (top)
-                    "assets/skybox/MilkyWayYN.png", // -Y (bottom)
-                    "assets/skybox/MilkyWayZP.png", // +Z (front)
-                    "assets/skybox/MilkyWayZN.png", // -Z (back)
+                    "assets/skybox/MilkyWayXP_2k.png", // +X (right) - pre-resized for WebGL2
+                    "assets/skybox/MilkyWayXN_2k.png", // -X (left)
+                    "assets/skybox/MilkyWayYP_2k.png", // +Y (top)
+                    "assets/skybox/MilkyWayYN_2k.png", // -Y (bottom)
+                    "assets/skybox/MilkyWayZP_2k.png", // +Z (front)
+                    "assets/skybox/MilkyWayZN_2k.png", // -Z (back)
                 ],
             )
             .await?;
@@ -673,16 +691,16 @@ impl MainRenderer {
         let (point_vertices, point_indices) = create_test_point();
         let point_mesh = Mesh::new(&device, &point_vertices, &point_indices);
 
-        // Create shaders
-        let default_shader = DefaultShader::new(&device)?;
-        let planet_atmo_shader = PlanetAtmoShader::new(&device, &queue)?;
-        let sun_shader = SunShader::new(&device, &queue)?;
-        let skybox_shader = SkyboxShader::new(&device)?;
-        let billboard_shader = BillboardShader::new(&device, &queue)?;
-        let lens_glow_shader = LensGlowShader::new(&device, &queue)?;
-        let black_hole_shader = BlackHoleShader::new(&device, &queue)?;
-        let line_shader = LineShader::new(&device, &queue)?;
-        let point_shader = PointShader::new(&device, &queue)?;
+        // Create shaders with surface format for proper color target compatibility
+        let default_shader = DefaultShader::new(&device, surface_format)?;
+        let planet_atmo_shader = PlanetAtmoShader::new(&device, &queue, surface_format)?;
+        let sun_shader = SunShader::new(&device, &queue, surface_format)?;
+        let skybox_shader = SkyboxShader::new(&device, surface_format)?;
+        let billboard_shader = BillboardShader::new(&device, &queue, surface_format)?;
+        let lens_glow_shader = LensGlowShader::new(&device, &queue, surface_format)?;
+        let black_hole_shader = BlackHoleShader::new(&device, &queue, surface_format)?;
+        let line_shader = LineShader::new(&device, &queue, surface_format)?;
+        let point_shader = PointShader::new(&device, &queue, surface_format)?;
 
         // Initialize MVP buffers and bind groups storage
         let mvp_buffers = Vec::new();
@@ -771,6 +789,7 @@ impl MainRenderer {
             glow_size: 10.0,      // Default size
             screen_width: 800.0,  // Default test screen dimensions
             screen_height: 800.0, // Default test screen dimensions
+            _padding: 0.0,        // Padding for 16-byte alignment (WebGL2 requirement)
         };
         let lens_glow_uniform_buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {

@@ -1,8 +1,13 @@
-// Default shader package - basic 3D object rendering  
-// Uses shared uniform definitions for consistency
-import super::shared::{VertexInput};
+// Default shader package - basic 3D object rendering
+// All definitions inlined for proper Rust binding generation
 
-// For now, inline the needed definitions until wesl import resolution is fixed
+// Common vertex input structure
+struct VertexInput {
+    @location(0) position: vec3<f32>,
+    @location(1) tex_coord: vec2<f32>,
+    @location(2) normal: vec3<f32>,
+};
+
 struct StandardMVPUniform {
     mvp_matrix: mat4x4<f32>,        // 0-63 (64 bytes)
     camera_position: vec3<f32>,     // 64-75 (12 bytes)

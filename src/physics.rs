@@ -4,7 +4,9 @@ use std::sync::{
     Arc, RwLock,
     atomic::{AtomicBool, Ordering},
 };
+#[cfg(not(target_arch = "wasm32"))]
 use std::thread::{self, JoinHandle};
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
 use crate::{
@@ -26,8 +28,12 @@ pub struct VelocityVerlet {
     bodies: Arc<RwLock<BodyCollection>>,
     simulation_speed: Arc<RwLock<f32>>,
     terminate_flag: Arc<AtomicBool>,
+    #[cfg(not(target_arch = "wasm32"))]
     thread_handle: Option<JoinHandle<()>>,
     stats: Arc<RwLock<PhysicsStats>>,
+    /// For web: accumulated simulation time for path recording
+    #[cfg(target_arch = "wasm32")]
+    simulation_time: f64,
 }
 
 impl Default for VelocityVerlet {
@@ -42,11 +48,16 @@ impl VelocityVerlet {
             bodies: Arc::new(RwLock::new(BodyCollection::new())),
             simulation_speed: Arc::new(RwLock::new(1.0)),
             terminate_flag: Arc::new(AtomicBool::new(false)),
+            #[cfg(not(target_arch = "wasm32"))]
             thread_handle: None,
             stats: Arc::new(RwLock::new(PhysicsStats::default())),
+            #[cfg(target_arch = "wasm32")]
+            simulation_time: 0.0,
         }
     }
 
+    /// Start simulation - native version uses threads
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn start_simulation(&mut self) -> AstrariaResult<()> {
         if self.thread_handle.is_some() {
             return Err(AstrariaError::Physics(
@@ -119,6 +130,47 @@ impl VelocityVerlet {
         });
 
         self.thread_handle = Some(handle);
+        Ok(())
+    }
+
+    /// Start simulation - web version is a no-op (simulation is driven by frame updates)
+    #[cfg(target_arch = "wasm32")]
+    pub fn start_simulation(&mut self) -> AstrariaResult<()> {
+        log::info!("Physics simulation started (web mode - frame-driven)");
+        Ok(())
+    }
+
+    /// Update physics for one frame - called from render loop on web
+    #[cfg(target_arch = "wasm32")]
+    pub fn step(&mut self, delta_time: f32) -> AstrariaResult<()> {
+        let mut dt = delta_time as f64;
+
+        // Apply simulation speed multiplier
+        if let Ok(speed) = self.simulation_speed.read() {
+            dt *= *speed as f64;
+        }
+
+        // Limit delta time to prevent numerical instability
+        dt = dt.min(0.1);
+
+        // Update simulation time
+        self.simulation_time += dt;
+
+        // Run the integration step
+        Self::integration_step(&self.bodies, dt, self.simulation_time)?;
+
+        // Update stats
+        if let Ok(mut stats_guard) = self.stats.write() {
+            stats_guard.total_steps = stats_guard.total_steps.wrapping_add(1);
+        }
+
+        Ok(())
+    }
+
+    /// Update physics for one frame - native version (no-op since thread handles it)
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn step(&mut self, _delta_time: f32) -> AstrariaResult<()> {
+        // Native version uses background thread, nothing to do here
         Ok(())
     }
 
@@ -231,6 +283,7 @@ impl VelocityVerlet {
         Ok(())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn stop_simulation(&mut self) {
         self.terminate_flag.store(true, Ordering::Relaxed);
 
@@ -239,6 +292,12 @@ impl VelocityVerlet {
                 log::error!("Failed to join physics thread: {e:?}");
             }
         }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn stop_simulation(&mut self) {
+        self.terminate_flag.store(true, Ordering::Relaxed);
+        log::info!("Physics simulation stopped (web mode)");
     }
 
     pub fn add_body(&self, body: Body) -> AstrariaResult<()> {
@@ -347,10 +406,10 @@ impl PhysicsSimulation {
         self.algorithm.stop_simulation();
     }
 
-    pub fn update(&mut self, _delta_time: f32) -> AstrariaResult<()> {
-        // The actual physics runs on a separate thread
-        // This could be used for interpolation or other per-frame updates
-        Ok(())
+    pub fn update(&mut self, delta_time: f32) -> AstrariaResult<()> {
+        // On web, run physics step each frame since we don't have threads
+        // On native, the physics runs on a separate thread
+        self.algorithm.step(delta_time)
     }
 
     pub fn add_body(&self, body: Body) -> AstrariaResult<()> {

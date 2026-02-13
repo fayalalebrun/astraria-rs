@@ -12,7 +12,7 @@ pub struct DefaultShader {
 }
 
 impl DefaultShader {
-    pub fn new(device: &Device) -> AstrariaResult<Self> {
+    pub fn new(device: &Device, surface_format: wgpu::TextureFormat) -> AstrariaResult<Self> {
         // Use generated shader module
         let shader = generated_shaders::default::create_shader_module(device);
 
@@ -23,7 +23,7 @@ impl DefaultShader {
         let vertex_entry = generated_shaders::default::vs_main_entry(wgpu::VertexStepMode::Vertex);
         let fragment_entry =
             generated_shaders::default::fs_main_entry([Some(wgpu::ColorTargetState {
-                format: wgpu::TextureFormat::Bgra8UnormSrgb,
+                format: surface_format,
                 blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                 write_mask: wgpu::ColorWrites::ALL,
             })]);
@@ -39,7 +39,8 @@ impl DefaultShader {
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
+                // Use Cw for WebGL compatibility (Y-axis is flipped in clip space)
+                front_face: wgpu::FrontFace::Cw,
                 cull_mode: Some(wgpu::Face::Back),
                 polygon_mode: wgpu::PolygonMode::Fill,
                 unclipped_depth: false,

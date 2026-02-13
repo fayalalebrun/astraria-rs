@@ -10,7 +10,7 @@ pub struct SkyboxShader {
 }
 
 impl SkyboxShader {
-    pub fn new(device: &Device) -> AstrariaResult<Self> {
+    pub fn new(device: &Device, surface_format: wgpu::TextureFormat) -> AstrariaResult<Self> {
         // Use generated shader module
         let shader = generated_shaders::skybox::create_shader_module(device);
 
@@ -29,7 +29,7 @@ impl SkyboxShader {
         // Use generated fragment entry
         let fragment_entry =
             generated_shaders::skybox::fs_main_entry([Some(wgpu::ColorTargetState {
-                format: wgpu::TextureFormat::Bgra8UnormSrgb,
+                format: surface_format,
                 blend: Some(wgpu::BlendState::REPLACE),
                 write_mask: wgpu::ColorWrites::ALL,
             })]);

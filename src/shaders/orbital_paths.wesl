@@ -1,7 +1,37 @@
 // Orbital paths shader package for smooth Catmull-Rom spline interpolation
-// Uses shared uniform definitions for consistency with the rest of the renderer
+// All definitions inlined for proper Rust binding generation
 
-import super::shared::{StandardMVPUniform, model_to_clip_coordinates, VertexInput};
+// Common vertex input structure
+struct VertexInput {
+    @location(0) position: vec3<f32>,
+    @location(1) tex_coord: vec2<f32>,
+    @location(2) normal: vec3<f32>,
+};
+
+struct StandardMVPUniform {
+    mvp_matrix: mat4x4<f32>,
+    camera_position: vec3<f32>,
+    _padding1: f32,
+    camera_direction: vec3<f32>,
+    _padding2: f32,
+    log_depth_constant: f32,
+    far_plane_distance: f32,
+    near_plane_distance: f32,
+    fc_constant: f32,
+    mv_matrix: mat4x4<f32>,
+};
+
+fn model_to_clip_coordinates(
+    position: vec4<f32>,
+    mvp_matrix: mat4x4<f32>,
+    depth_constant: f32,
+    far_plane_distance: f32
+) -> vec4<f32> {
+    var clip = mvp_matrix * position;
+    let fcoef = 1.0 / log2(far_plane_distance + 1.0);
+    clip.z = log2(max(1e-6, 1.0 + clip.w)) * fcoef * clip.w;
+    return clip;
+}
 
 struct PathControlPoint {
     position: vec3<f32>,     // Camera-relative position

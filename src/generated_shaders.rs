@@ -6,7 +6,7 @@ include!(concat!(env!("OUT_DIR"), "/shaders/mod.rs"));
 
 // Re-export commonly used types from the generated modules
 pub mod common {
-    // Re-export demangled/consolidated vertex input types
+    // Re-export VertexInput from default shader (now defined inline, not imported)
     pub use super::default::VertexInput;
 
     // Re-export specialized vertex input types
