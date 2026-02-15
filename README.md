@@ -1,5 +1,7 @@
 # Astraria
 
+**[Try it in your browser](https://fayalalebrun.github.io/astraria-rs/)**
+
 3D orbital mechanics simulator written in Rust. Supports native (desktop) and WebGL2/WASM (browser) targets.
 
 ## Building
